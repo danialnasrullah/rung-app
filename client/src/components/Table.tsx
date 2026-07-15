@@ -7,6 +7,13 @@ interface TableProps {
 
 const HAND_SIZE = 13;
 
+const SUIT_SYMBOL: Record<string, string> = {
+  spades: "♠", diamonds: "♦", clubs: "♣", hearts: "♥",
+};
+const SUIT_COLOR: Record<string, string> = {
+  spades: "text-slate-900", diamonds: "text-rose-600", clubs: "text-slate-900", hearts: "text-rose-600",
+};
+
 function relativeLabel(offset: number): string {
   if (offset === 2) return "Partner";
   if (offset === 1) return "Left";
@@ -67,6 +74,14 @@ export function Table({ view }: TableProps) {
         <span className="text-xs uppercase tracking-widest text-gold-400/70">
           Sar {Math.min((hand?.sarNumber ?? 0) + 1, HAND_SIZE)} of {HAND_SIZE} · Heap: {hand?.heapSarCount ?? 0}
         </span>
+        {hand?.rungOpened && hand.rungSuit && (
+          <span className={`text-sm font-semibold ${SUIT_COLOR[hand.rungSuit]}`}>
+            Rung: {SUIT_SYMBOL[hand.rungSuit]} {hand.rungSuit.charAt(0).toUpperCase() + hand.rungSuit.slice(1)}
+          </span>
+        )}
+        {hand?.rungChosen && !hand.rungOpened && (
+          <span className="text-xs italic text-slate-500">Rung: hidden</span>
+        )}
         <div className="flex gap-3">
           {hand?.currentTrick.map((pc) => (
             <PlayingCard key={pc.seat} card={pc.card} size="md" />

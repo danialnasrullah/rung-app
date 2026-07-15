@@ -38,6 +38,7 @@ export interface PublicHandState {
   rungSelectorSeat: Seat;
   rungSuit: Suit | null;
   rungChosen: boolean;
+  rungOpened: boolean;
   sarNumber: number;
   leaderSeat: Seat;
   currentTrick: PlayedCard[];
