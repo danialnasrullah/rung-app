@@ -37,7 +37,7 @@ export function PlayingCard({ card, selected, disabled, size = "md", onClick }: 
         "relative select-none rounded-md border bg-white shadow-sm transition-transform",
         SIZE_CLASSES[size],
         colorClass,
-        disabled ? "opacity-40 grayscale cursor-not-allowed" : "cursor-pointer hover:-translate-y-1",
+        disabled ? "opacity-40 cursor-not-allowed" : "cursor-pointer hover:-translate-y-1",
         selected ? "-translate-y-2 ring-2 ring-gold-400" : "",
         onClick ? "" : "cursor-default",
       ].join(" ")}
