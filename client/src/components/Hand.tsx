@@ -19,9 +19,23 @@ interface HandProps {
   legalMoves: LegalMoveInfo[];
   onPlay: (card: Card) => void;
   interactive: boolean;
+  rungCard?: Card | null;
+  rungOpened?: boolean;
 }
 
-export function Hand({ cards, legalMoves, onPlay, interactive }: HandProps) {
+function isRungCard(card: Card, rungCard: Card | null | undefined): boolean {
+  return rungCard !== null && rungCard !== undefined &&
+    card.suit === rungCard.suit && card.rank === rungCard.rank;
+}
+
+export function Hand({
+  cards,
+  legalMoves,
+  onPlay,
+  interactive,
+  rungCard,
+  rungOpened,
+}: HandProps) {
   const [reversed, setReversed] = useState(false);
 
   const legalFor = (card: Card): LegalMoveInfo | undefined =>
@@ -51,14 +65,31 @@ export function Hand({ cards, legalMoves, onPlay, interactive }: HandProps) {
         {sorted.map((card) => {
           const move = legalFor(card);
           const disabled = !interactive || !move?.legal;
+          const isRung = isRungCard(card, rungCard);
+          const isHidden = isRung && !rungOpened;
+
           return (
-            <PlayingCard
+            <div
               key={`${card.suit}-${card.rank}`}
-              card={card}
-              size="lg"
-              disabled={disabled}
-              onClick={disabled ? undefined : () => onPlay(card)}
-            />
+              className="flex flex-col items-center gap-0.5"
+            >
+              <PlayingCard
+                card={card}
+                size="lg"
+                disabled={disabled}
+                onClick={disabled ? undefined : () => onPlay(card)}
+              />
+              {isHidden && (
+                <span className="text-[9px] uppercase tracking-wider text-amber-400/80 font-semibold">
+                  Rung
+                </span>
+              )}
+              {isRung && rungOpened && (
+                <span className="text-[9px] uppercase tracking-wider text-gold-400/80 font-semibold">
+                  ★ Rung
+                </span>
+              )}
+            </div>
           );
         })}
       </div>

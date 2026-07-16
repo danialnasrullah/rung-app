@@ -15,8 +15,13 @@ export const joinRoomSchema = z.object({
   displayName: z.string().min(1).max(40),
 });
 
+export const chooseTeamSchema = z.object({
+  team: z.union([z.literal(0), z.literal(1)]),
+});
+
+/** Rung is now set by choosing a card, not a bare suit. */
 export const selectRungSchema = z.object({
-  suit: suitSchema,
+  card: cardSchema,
 });
 
 export const playCardSchema = z.object({

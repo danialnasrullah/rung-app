@@ -23,36 +23,52 @@ function rankValue(rank: Rank): number {
 }
 
 function cardBeats(a: Card, b: Card): boolean {
-  // Assumes same suit. Returns true if a outranks b.
   return rankValue(a.rank) > rankValue(b.rank);
 }
 
 const MIN_PICKABLE_SAR = 5;
+/**
+ * Opposing team may only pick on sars 5–11. Sar 12 is not a valid pick sar —
+ * the hand must play to sar 13 (where the rung team can complete a court).
+ */
+const MAX_OPPOSING_PICK_SAR = 11;
 const HAND_SIZE = 13;
+
+/** Dummy card used in place of a face-down card in publicState output. */
+const DUMMY_CARD: Card = { suit: "clubs", rank: "2" };
 
 export interface PublicHandState {
   phase: HandPhase;
   dealerSeat: Seat;
   rungSelectorSeat: Seat;
   /**
-   * Revealed to the rung selector always; revealed to all players once
-   * rungOpened is true. Null for non-selectors until opening.
+   * Revealed to the rung selector always; revealed to all once rungOpened.
+   * Null for non-selectors until opening.
    */
   rungSuit: Suit | null;
-  /** True once rung has been chosen, so other seats know play has started. */
+  /**
+   * The specific card used to set the rung. Visible to the selector always;
+   * revealed to all when rung is opened.
+   */
+  rungCard: Card | null;
+  /** True once rung has been chosen. */
   rungChosen: boolean;
   /**
-   * True once the first opposing-team player has been void in the led suit,
-   * which reveals and activates rung for everyone.
+   * True once the first opposing-team player is void in the led suit,
+   * revealing and activating rung for everyone.
    */
   rungOpened: boolean;
   sarNumber: number;
   leaderSeat: Seat;
   currentTrick: PlayedCard[];
+  /** Cards from the most recently completed sar (cleared on first card of next sar). */
+  lastSarCards: PlayedCard[] | null;
   /** Only the top card of the heap is ever visible, per house rules. */
   heapTopCard: Card | null;
   heapSarCount: number;
   winner: HandWinner | null;
+  /** Set when a reshuffle occurs (e.g. 7+ rung-suit cards). Cleared when rung is chosen. */
+  lastReshuffleReason: string | null;
 }
 
 export class RungHand {
@@ -62,19 +78,15 @@ export class RungHand {
 
   hands: Record<Seat, Card[]>;
   rungSuit: Suit | null = null;
+  /** The specific card chosen to set the rung; cannot be played until rung is opened. */
+  rungCard: Card | null = null;
   phase: HandPhase = "awaiting-redeal-decision";
 
-  /**
-   * Becomes true the first time an opposing-team player is void in the led
-   * suit. Before this, rung cards have no trump power whatsoever.
-   */
   rungOpened = false;
 
   /**
    * The index within currentTrick at which rung was opened during the opening
-   * sar. Only rung cards played at this position or later carry trump power in
-   * that sar; cards played earlier are treated as dead off-suit cards even if
-   * they happen to be the rung suit.
+   * sar. Only rung cards at this position or later carry trump power.
    */
   private rungOpenedAtTrickPos: number | null = null;
 
@@ -87,6 +99,8 @@ export class RungHand {
   lastSenior: { seat: Seat; wonWithAce: boolean } | null = null;
   history: SarResult[] = [];
   winner: HandWinner | null = null;
+  lastSarCards: PlayedCard[] | null = null;
+  lastReshuffleReason: string | null = null;
 
   constructor(dealerSeat: Seat, rng: () => number = Math.random) {
     this.dealerSeat = dealerSeat;
@@ -99,9 +113,6 @@ export class RungHand {
   private dealFirstFive(): Record<Seat, Card[]> {
     const deck = shuffle(buildDeck(), this.rng);
     const { hands } = dealBatches(deck, this.dealerSeat);
-    // Only the first 5 cards of each hand exist at this point conceptually;
-    // we deal the full batches now but only *reveal* the first five to the
-    // rung selector via the API layer until rung is chosen.
     return {
       0: hands[0],
       1: hands[1],
@@ -110,7 +121,6 @@ export class RungHand {
     } as Record<Seat, Card[]>;
   }
 
-  /** The rung selector may request a redeal only if their first 5 cards have no face card. */
   canRequestRedeal(): boolean {
     if (this.phase !== "awaiting-redeal-decision") return false;
     const selectorFirstFive = firstFive(this.hands[this.rungSelectorSeat]);
@@ -127,14 +137,37 @@ export class RungHand {
     this.hands = this.dealFirstFive();
   }
 
-  selectRung(seat: Seat, suit: Suit): void {
+  /**
+   * The rung selector picks a card from their first five; the card's suit
+   * becomes rung and the card itself is set aside (unplayable until rung opens).
+   *
+   * If the selector holds 7 or more cards of the chosen suit, the hand is
+   * reshuffled automatically and the selector must choose again.
+   */
+  selectRung(seat: Seat, card: Card): void {
     if (seat !== this.rungSelectorSeat) {
       throw new Error("Only the rung selector may select the rung");
     }
     if (this.phase !== "awaiting-redeal-decision") {
       throw new Error("Rung has already been selected for this hand");
     }
-    this.rungSuit = suit;
+
+    const cardInHand = this.hands[seat].some(
+      (c) => c.suit === card.suit && c.rank === card.rank,
+    );
+    if (!cardInHand) throw new Error("Card is not in hand");
+
+    const suitCount = this.hands[seat].filter((c) => c.suit === card.suit).length;
+    if (suitCount >= 7) {
+      // Rule: 7+ of the rung suit is a forced reshuffle.
+      this.hands = this.dealFirstFive();
+      this.lastReshuffleReason = "7 or more cards of the chosen suit — reshuffled";
+      return; // Stay in awaiting-redeal-decision; selector must choose again.
+    }
+
+    this.rungSuit = card.suit;
+    this.rungCard = card;
+    this.lastReshuffleReason = null;
     this.phase = "trick-play";
   }
 
@@ -150,15 +183,11 @@ export class RungHand {
     return this.seatHand(seat).some((c) => c.suit === suit);
   }
 
-  /** Provisional winner among the cards played so far in the current trick. */
   private provisionalWinner(cards: PlayedCard[]): { seat: Seat; viaCut: boolean } {
     if (cards.length === 0) throw new Error("No cards played yet");
     const led = cards[0].card.suit;
     const rung = this.rungSuit;
 
-    // Rung has cutting power only after it has been opened, and only when rung
-    // is not itself the led suit. In the opening sar, only cards played at or
-    // after rungOpenedAtTrickPos carry trump power — earlier cards are dead.
     if (this.rungOpened && rung && led !== rung) {
       const trumpStartPos = this.rungOpenedAtTrickPos ?? 0;
       const cuts = cards.slice(trumpStartPos).filter((pc) => pc.card.suit === rung);
@@ -168,22 +197,15 @@ export class RungHand {
       }
     }
 
-    // No effective cuts — highest card of the led suit wins.
-    // Off-suit cards (including rung cards before opening) are inferior and cannot win.
     const followers = cards.filter((pc) => pc.card.suit === led);
     const best = followers.reduce((a, b) => (cardBeats(b.card, a.card) ? b : a));
     return { seat: best.seat, viaCut: false };
   }
 
-  /**
-   * Would the rung-selecting team complete a pick on the *current* trick if
-   * the provisional winner (from cards played so far) ends up senior?
-   * Used to decide whether the forced-cut rule applies to the last player.
-   */
   private wouldCompletePick(provisionalSeat: Seat, provisionalCard: Card): boolean {
     const currentSarNumber = this.sarNumber + 1;
     if (currentSarNumber < MIN_PICKABLE_SAR) return false;
-    if (provisionalCard.rank === "A") return false; // ace exception
+    if (provisionalCard.rank === "A") return false;
     if (teamOf(provisionalSeat) !== teamOf(this.rungSelectorSeat)) return false;
     if (!this.lastSenior) return false;
     if (this.lastSenior.wonWithAce) return false;
@@ -193,44 +215,50 @@ export class RungHand {
   getLegalMoves(seat: Seat): LegalMoveInfo[] {
     const hand = this.seatHand(seat);
     if (this.phase !== "trick-play") {
-      return hand.map((card) => ({ card, legal: false, reason: "not-your-turn" }));
+      return hand.map((card) => ({ card, legal: false, reason: "not-your-turn" as const }));
     }
     const turnSeat = ((this.leaderSeat + this.currentTrick.length) % 4) as Seat;
     if (seat !== turnSeat) {
-      return hand.map((card) => ({ card, legal: false, reason: "not-your-turn" }));
+      return hand.map((card) => ({ card, legal: false, reason: "not-your-turn" as const }));
     }
 
     const led = this.ledSuit();
     if (led === null) {
-      // Leading the trick: any card is legal.
-      return hand.map((card) => ({ card, legal: true }));
+      // Leading the trick — any card is legal, except the rung card before opening.
+      return hand.map((card) => {
+        if (this.isRungCardLocked(card)) {
+          return { card, legal: false, reason: "is-rung-card" as const };
+        }
+        return { card, legal: true };
+      });
     }
 
     const hasLed = this.hasSuit(seat, led);
     if (hasLed) {
-      // Must follow the led suit — always, regardless of whether rung is open.
       return hand.map((card) => ({
         card,
         legal: card.suit === led,
-        reason: card.suit === led ? undefined : "must-follow-suit",
+        reason: card.suit === led ? undefined : ("must-follow-suit" as const),
       }));
     }
 
     // Player is void in the led suit.
-
     if (!this.rungOpened) {
-      // Rung is not yet open: rung cards have no trump power.
-      // Opposing-team players must play rung to force it open (if they hold any).
-      // Rung-team players void in led suit may play any card freely.
       const isOpposing = teamOf(seat) !== teamOf(this.rungSelectorSeat);
       if (isOpposing && this.rungSuit && this.hasSuit(seat, this.rungSuit)) {
         return hand.map((card) => ({
           card,
           legal: card.suit === this.rungSuit,
-          reason: card.suit === this.rungSuit ? undefined : "must-cut",
+          reason: card.suit === this.rungSuit ? undefined : ("must-cut" as const),
         }));
       }
-      return hand.map((card) => ({ card, legal: true }));
+      // Rung-team player void: may play any card (except locked rung card).
+      return hand.map((card) => {
+        if (this.isRungCardLocked(card)) {
+          return { card, legal: false, reason: "is-rung-card" as const };
+        }
+        return { card, legal: true };
+      });
     }
 
     // Rung is open. Apply the forced-cut-for-pick rule for the last opposing player.
@@ -247,14 +275,23 @@ export class RungHand {
           return hand.map((card) => ({
             card,
             legal: card.suit === this.rungSuit,
-            reason: card.suit === this.rungSuit ? undefined : "must-cut",
+            reason: card.suit === this.rungSuit ? undefined : ("must-cut" as const),
           }));
         }
       }
     }
 
-    // No restriction beyond void in led suit — any card is legal.
     return hand.map((card) => ({ card, legal: true }));
+  }
+
+  /** Returns true if the given card is the locked rung card (unplayable before opening). */
+  private isRungCardLocked(card: Card): boolean {
+    return (
+      !this.rungOpened &&
+      this.rungCard !== null &&
+      card.suit === this.rungCard.suit &&
+      card.rank === this.rungCard.rank
+    );
   }
 
   playCard(seat: Seat, card: Card): SarResult | null {
@@ -265,10 +302,14 @@ export class RungHand {
     if (!match) throw new Error("Card is not in hand");
     if (!match.legal) throw new Error(`Illegal move: ${match.reason ?? "unknown"}`);
 
-    // Detect rung opening: triggered the first time an opposing-team player
-    // plays while void in the led suit. Even if they have no rung to play,
-    // the opening still occurs and rung is revealed to all.
+    // Clear lastSarCards when the first card of a new sar is played.
+    if (this.currentTrick.length === 0) {
+      this.lastSarCards = null;
+    }
+
     const led = this.ledSuit();
+
+    // Detect rung opening: first opposing-team player void in led suit.
     if (
       !this.rungOpened &&
       led !== null &&
@@ -277,16 +318,21 @@ export class RungHand {
     ) {
       this.rungOpened = true;
       this.rungOpenedAtTrickPos = this.currentTrick.length;
-      // Reset the consecutive-win streak: sars won before opening cannot
-      // contribute to a pick — the opening sar is the first eligible.
       this.lastSenior = null;
     }
 
-    // Remove from hand, add to trick.
+    // Detect whether this card should be shown face-down to opponents:
+    // rung selector plays off-suit before rung is opened.
+    const isFaceDown =
+      seat === this.rungSelectorSeat &&
+      !this.rungOpened &&
+      led !== null &&
+      !this.hasSuit(seat, led);
+
     this.hands[seat] = this.hands[seat].filter(
       (c) => !(c.suit === card.suit && c.rank === card.rank),
     );
-    this.currentTrick.push({ seat, card });
+    this.currentTrick.push({ seat, card, faceDown: isFaceDown || undefined });
 
     if (this.currentTrick.length < 4) {
       return null;
@@ -301,6 +347,10 @@ export class RungHand {
     const wonWithAce = winningCard.rank === "A";
 
     this.sarNumber += 1;
+
+    // Save the completed trick for display before clearing.
+    this.lastSarCards = [...this.currentTrick];
+
     const result: SarResult = {
       sarNumber: this.sarNumber,
       cardsPlayed: [...this.currentTrick],
@@ -311,20 +361,29 @@ export class RungHand {
     this.history.push(result);
     this.heapSarCount += 1;
     this.heapTopCard = winningCard;
-
-    // Clear the within-sar opening position; from the next sar onwards all
-    // four card positions carry full trump power.
     this.rungOpenedAtTrickPos = null;
 
-    // A pick requires: rung must be open, sar >= 5, no ace involved, and the
-    // same player was senior on the immediately preceding sar (also non-ace).
-    const completesPick =
-      this.sarNumber >= MIN_PICKABLE_SAR &&
+    const isOpposingWinner = teamOf(winner.seat) !== teamOf(this.rungSelectorSeat);
+
+    const consecutiveWin =
       this.rungOpened &&
       !wonWithAce &&
       this.lastSenior !== null &&
       !this.lastSenior.wonWithAce &&
       this.lastSenior.seat === winner.seat;
+
+    // Opposing team can only pick on sars 5–11. Sar 12 cannot be a pick sar.
+    const opposingTeamPicks =
+      consecutiveWin &&
+      isOpposingWinner &&
+      this.sarNumber >= MIN_PICKABLE_SAR &&
+      this.sarNumber <= MAX_OPPOSING_PICK_SAR;
+
+    // Rung team consecutive win clears the heap on any sar >= 5; a court at sar 13.
+    const rungTeamConsecutiveWin =
+      consecutiveWin && !isOpposingWinner && this.sarNumber >= MIN_PICKABLE_SAR;
+
+    const completesPick = opposingTeamPicks || rungTeamConsecutiveWin;
 
     if (completesPick) {
       const pickingTeam = teamOf(winner.seat);
@@ -334,12 +393,12 @@ export class RungHand {
 
       if (pickingTeam === teamOf(this.rungSelectorSeat)) {
         if (this.sarNumber === HAND_SIZE) {
-          this.winner = { team: pickingTeam, reason: "full-sweep" };
+          this.winner = { team: pickingTeam, reason: "court" };
           this.phase = "hand-complete";
+        } else {
+          // Mid-hand: heap cleared, streak restarts.
+          this.lastSenior = { seat: winner.seat, wonWithAce };
         }
-        // Rung team must sweep all 13; a mid-hand pick just clears the heap
-        // and the streak restarts from this trick's winner.
-        this.lastSenior = { seat: winner.seat, wonWithAce };
       } else {
         this.winner = { team: pickingTeam, reason: "pick" };
         this.phase = "hand-complete";
@@ -350,7 +409,7 @@ export class RungHand {
 
     if (!this.winner) {
       if (this.sarNumber === HAND_SIZE) {
-        // All 13 sar played without a decisive result — non-rung team wins by default.
+        // All 13 played, no decisive result — non-rung team wins by default.
         this.winner = { team: (1 - teamOf(this.rungSelectorSeat)) as 0 | 1, reason: "pick" };
         this.phase = "hand-complete";
       } else {
@@ -363,19 +422,42 @@ export class RungHand {
   }
 
   publicState(forSeat: Seat): PublicHandState {
+    const canSeeRung = forSeat === this.rungSelectorSeat || this.rungOpened;
+
+    // For non-selectors, obfuscate face-down cards in currentTrick and lastSarCards.
+    const hideFaceDown = forSeat !== this.rungSelectorSeat;
+
+    const currentTrick = this.currentTrick.map((pc) => {
+      if (pc.faceDown && hideFaceDown) {
+        return { seat: pc.seat, card: DUMMY_CARD, faceDown: true };
+      }
+      return pc;
+    });
+
+    const lastSarCards =
+      this.lastSarCards?.map((pc) => {
+        if (pc.faceDown && hideFaceDown) {
+          return { seat: pc.seat, card: DUMMY_CARD, faceDown: true };
+        }
+        return pc;
+      }) ?? null;
+
     return {
       phase: this.phase,
       dealerSeat: this.dealerSeat,
       rungSelectorSeat: this.rungSelectorSeat,
-      rungSuit: forSeat === this.rungSelectorSeat || this.rungOpened ? this.rungSuit : null,
+      rungSuit: canSeeRung ? this.rungSuit : null,
+      rungCard: canSeeRung ? this.rungCard : null,
       rungChosen: this.rungSuit !== null,
       rungOpened: this.rungOpened,
       sarNumber: this.sarNumber,
       leaderSeat: this.leaderSeat,
-      currentTrick: this.currentTrick,
+      currentTrick,
+      lastSarCards,
       heapTopCard: this.heapTopCard,
       heapSarCount: this.heapSarCount,
       winner: this.winner,
+      lastReshuffleReason: this.lastReshuffleReason,
     };
   }
 }

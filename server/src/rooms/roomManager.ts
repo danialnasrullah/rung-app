@@ -16,6 +16,10 @@ export class RoomManager {
     return this.rooms.get(roomId);
   }
 
+  delete(roomId: string): void {
+    this.rooms.delete(roomId);
+  }
+
   findRoomBySocket(socketId: string): GameRoom | undefined {
     for (const room of this.rooms.values()) {
       if (room.occupiedSeatSocketIds().includes(socketId)) {

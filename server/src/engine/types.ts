@@ -26,6 +26,8 @@ export function teamOf(seat: Seat): 0 | 1 {
 export interface PlayedCard {
   seat: Seat;
   card: Card;
+  /** True when the rung selector plays off-suit before rung is opened; hidden from opponents. */
+  faceDown?: boolean;
 }
 
 export type SarPhase = "cannot-pick" | "pickable";
@@ -46,12 +48,13 @@ export type HandPhase =
 
 export interface HandWinner {
   team: 0 | 1;
-  reason: "full-sweep" | "pick";
+  /** court = all 13 sar swept by rung team (formerly "full-sweep"). pick = opposing team picks. */
+  reason: "court" | "pick";
 }
 
 export interface LegalMoveInfo {
   card: Card;
   legal: boolean;
   /** Reason a card is illegal, for UI messaging / debugging. */
-  reason?: "must-follow-suit" | "must-cut" | "not-your-turn" | "not-in-hand";
+  reason?: "must-follow-suit" | "must-cut" | "not-your-turn" | "not-in-hand" | "is-rung-card";
 }

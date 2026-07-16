@@ -13,11 +13,14 @@ export type Seat = 0 | 1 | 2 | 3;
 export interface PlayedCard {
   seat: Seat;
   card: Card;
+  /** True when the rung selector's card is hidden from opponents. */
+  faceDown?: boolean;
 }
 
 export interface HandWinner {
   team: 0 | 1;
-  reason: "full-sweep" | "pick";
+  /** court = rung team swept all 13; pick = opposing team picked. */
+  reason: "court" | "pick";
 }
 
 export type HandPhase =
@@ -29,7 +32,7 @@ export type HandPhase =
 export interface LegalMoveInfo {
   card: Card;
   legal: boolean;
-  reason?: "must-follow-suit" | "must-cut" | "not-your-turn" | "not-in-hand";
+  reason?: "must-follow-suit" | "must-cut" | "not-your-turn" | "not-in-hand" | "is-rung-card";
 }
 
 export interface PublicHandState {
@@ -37,14 +40,19 @@ export interface PublicHandState {
   dealerSeat: Seat;
   rungSelectorSeat: Seat;
   rungSuit: Suit | null;
+  /** The card used to set the rung; visible to selector always, to all when rung is opened. */
+  rungCard: Card | null;
   rungChosen: boolean;
   rungOpened: boolean;
   sarNumber: number;
   leaderSeat: Seat;
   currentTrick: PlayedCard[];
+  /** Cards from the last completed sar (visible until first card of next sar). */
+  lastSarCards: PlayedCard[] | null;
   heapTopCard: Card | null;
   heapSarCount: number;
   winner: HandWinner | null;
+  lastReshuffleReason: string | null;
 }
 
 export interface SeatView {
@@ -52,12 +60,20 @@ export interface SeatView {
   connected: boolean;
 }
 
+export interface TeamSelectionView {
+  players: { displayName: string; team: 0 | 1 | null; isYou: boolean }[];
+}
+
+export type RoomPhase = "waiting-for-players" | "team-selection" | "in-hand";
+
 export interface PersonalizedRoomView {
   roomId: string;
-  phase: "waiting-for-players" | "in-hand";
-  seat: Seat;
+  phase: RoomPhase;
+  /** null during team-selection phase. */
+  seat: Seat | null;
   seats: (SeatView | null)[];
   dealerSeat: Seat | null;
   hand: (PublicHandState & { yourCards: Card[]; legalMoves: LegalMoveInfo[] }) | null;
   lastHandWinner: HandWinner | null;
+  teamSelection: TeamSelectionView | null;
 }
